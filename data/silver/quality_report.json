@@ -1,0 +1,41 @@
+{
+  "bronze_rows": 258116,
+  "silver_rows": 258116,
+  "rejected_rows": 0,
+  "rows_per_year": {
+    "2024": 135994,
+    "2025": 122122
+  },
+  "boxes_per_year": {
+    "2024": 114091396,
+    "2025": 104637698
+  },
+  "reimbursed_eur_per_year": {
+    "2024": 423804786.97,
+    "2025": 379299615.75
+  },
+  "distinct_cip13": 626,
+  "distinct_atc5": 48,
+  "population_per_year": {
+    "2024": 68638377,
+    "2025": 68851996
+  },
+  "quality_gates": {
+    "invalid_rows_pct": 0.0,
+    "unknown_region_boxes_pct": 0.28,
+    "join_rate_pct": 100.0,
+    "reconciliation_boxes": 0,
+    "status": {
+      "invalid_rows == 0 % (rejet)": true,
+      "unknown_region < 2 % des boîtes (avertissement)": true,
+      "join_rate > 98 % (bloquant)": true,
+      "reconciliation == 0 (bloquant)": true
+    }
+  },
+  "notes": [
+    "REM et BSE : point = séparateur de milliers, virgule = décimale (70 683 valeurs J01 concernées).",
+    "Release 2025 : accents des libellés ATC altérés ; libellés repris de la release 2024.",
+    "BEN_REG : Corse regroupée avec la région 93, DOM regroupés sous le code 5 ; INSEE recodé de même.",
+    "Codes inconnus conservés (âge 99, sexe 9, région 99) mais exclus des taux."
+  ]
+}

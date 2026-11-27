@@ -77,6 +77,7 @@ ORDER BY region_name, year;
 -- du prescripteur et par tranche d'âge, en 2025, avec sous-totaux.
 -- Opérations : slice (année = 2025, ATC2 = J01) + ROLLUP (spécialité, âge)
 -- + part de chaque ligne dans le total national (fonction de fenêtre).
+-- Les spécialités pesant moins de 1 % sont regroupées en « Autres ».
 -- ---------------------------------------------------------------------
 WITH antibio_2025 AS (
   SELECT pr.specialty_label, ag.age_band_label, f.boxes
@@ -89,10 +90,19 @@ WITH antibio_2025 AS (
   JOIN dim_atc4       a4 ON a4.atc4_code     = a5.atc4_code
   JOIN dim_atc3       a3 ON a3.atc3_code     = a4.atc3_code
   WHERE t.year = 2025 AND a3.atc2_code = 'J01'
+),
+grouped AS (
+  SELECT CASE WHEN SUM(boxes) OVER (PARTITION BY specialty_label)
+                   < 0.01 * SUM(boxes) OVER () THEN 'Autres (< 1 % chacune)'
+              ELSE specialty_label END AS specialty,
+         age_band_label, boxes
+  FROM antibio_2025
 )
-SELECT specialty_label, age_band_label,
+SELECT specialty, age_band_label,
        SUM(boxes) AS boxes,
-       ROUND(100.0 * SUM(boxes) / (SELECT SUM(boxes) FROM antibio_2025), 1) AS pct_of_national
-FROM antibio_2025
-GROUP BY ROLLUP (specialty_label, age_band_label)
-ORDER BY specialty_label NULLS LAST, age_band_label NULLS LAST;
+       ROUND(100.0 * SUM(boxes) / (SELECT SUM(boxes) FROM grouped), 1) AS pct_of_national
+FROM grouped
+GROUP BY ROLLUP (specialty, age_band_label)
+ORDER BY GROUPING(specialty),
+         SUM(SUM(boxes)) OVER (PARTITION BY specialty) DESC, specialty,
+         GROUPING(age_band_label) DESC, SUM(boxes) DESC;

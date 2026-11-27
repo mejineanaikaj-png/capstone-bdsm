@@ -11,12 +11,12 @@
 
 ## Données
 
-| Fournisseur | Jeu de données | Versions | Rôle dans l'entrepôt |
+| Fournisseur | Jeu de données | Années utilisées | Rôle dans l'entrepôt |
 |---|---|---|---|
-| Assurance Maladie | [Open Medic](https://www.data.gouv.fr/datasets/open-medic-base-complete-sur-les-depenses-de-medicaments-interregimes) : médicaments délivrés en pharmacie de ville | Bases annuelles 2024 et 2025 | `fact_dispensation` |
-| INSEE | [Estimations de population](https://www.insee.fr/fr/statistiques/8721456) par région, sexe et âge quinquennal | Éditions 2025 et 2026 | `fact_population` |
+| Assurance Maladie | [Open Medic](https://www.data.gouv.fr/datasets/open-medic-base-complete-sur-les-depenses-de-medicaments-interregimes) : médicaments délivrés en pharmacie de ville (colonnes `ATC1`…`ATC5`, `CIP13`, `age`, `sexe`, `BEN_REG`, `PSP_SPE`, `BOITES`, `REM`, `BSE`) | Bases annuelles 2024 et 2025 (deux versions) | `fact_dispensation` |
+| INSEE | [Estimations de population](https://www.insee.fr/fr/statistiques/8721456) au 1er janvier, par région, sexe et grande classe d'âge (données actualisées au 23 décembre 2025) | 2024 et 2025 | `fact_population` |
 
-Les deux sources sont publiées chaque année, ce qui permet le chargement incrémental de deux versions. Elles sont agrégées : elles ne contiennent aucune donnée personnelle.
+Périmètre retenu : les **antibactériens à usage systémique (ATC2 = J01)**, soit 258 116 lignes Open Medic, 48 molécules et 626 présentations sur les deux années. Les données sont agrégées : elles ne contiennent aucune donnée personnelle.
 
 ---
 
@@ -146,7 +146,7 @@ erDiagram
 - **Tranches d'âge harmonisées en Silver.** Les tranches de 5 ans de l'INSEE sont regroupées dans les tranches d'Open Medic avant le chargement, pour que les deux faits utilisent la même dimension.
 - **Flocon sur la seule dimension Médicament.** C'est la seule vraie hiérarchie profonde (5 niveaux ATC) ; les autres dimensions restent dénormalisées, comme dans un schéma en étoile.
 
-Le script complet est dans [`sql/01_gold_schema.sql`](sql/01_gold_schema.sql) (tables et jeu d'essai synthétique).
+Le script de création est dans [`sql/01_gold_schema.sql`](sql/01_gold_schema.sql) ; les tables sont remplies par [`pipeline/03_load_gold.py`](pipeline/03_load_gold.py).
 
 ---
 
@@ -164,10 +164,40 @@ Chaque KPI devient une requête sur le schéma en suivant le même raisonnement 
 | KPI 6 | « Quel est l'écart entre la région qui consomme le plus et celle qui consomme le moins ? » | Calculer le KPI 1 par région pour chaque année, puis `MAX(...) − MIN(...)` sur une fenêtre partitionnée par année. | Roll-up, fonction de fenêtre |
 | Drill-down | « Quelles molécules expliquent la consommation dans une région ? » | Partir du KPI 1 d'une région, puis descendre la hiérarchie ATC : J01 → J01C (pénicillines) → J01CA04 (amoxicilline). | Drill-down le long du flocon ATC |
 
-**Bonus.** Trois de ces requêtes sont écrites en SQL et testées dans [`sql/02_kpi_queries.sql`](sql/02_kpi_queries.sql) et dans le notebook :
+**Bonus.** Trois de ces requêtes sont écrites en SQL et exécutées sur les données réelles dans [`sql/02_kpi_queries.sql`](sql/02_kpi_queries.sql) et dans le notebook :
 - **Requête A** : KPI 1 et KPI 2 par région et par année ;
 - **Requête B** : KPI 3 et KPI 6, évolution annuelle et écart entre régions ;
 - **Requête C** : KPI 5, répartition par spécialité et tranche d'âge, avec `ROLLUP`.
+
+---
+
+## 4. Pipeline et premiers résultats (données réelles)
+
+| Étape | Script | Ce qu'elle fait |
+|---|---|---|
+| Archive + Bronze | [`pipeline/01_archive_bronze.py`](pipeline/01_archive_bronze.py) | Empreinte SHA-256 des fichiers sources ; lecture brute (tout en texte) du périmètre J01 ; colonnes de traçabilité ; ingestion idempotente |
+| Silver | [`pipeline/02_silver.py`](pipeline/02_silver.py) | Typage, harmonisation des codes, regroupement des tranches d'âge INSEE, contrôles qualité avec seuils |
+| Gold | [`pipeline/03_load_gold.py`](pipeline/03_load_gold.py) | Création du schéma et chargement des dimensions et des faits dans PostgreSQL |
+
+**Problèmes de qualité trouvés dans les données réelles et traités en Silver**
+- **Séparateur des milliers** : dans `REM` et `BSE`, le point sépare les milliers et la virgule les décimales (`5.464,46` = 5 464,46 €). 70 683 valeurs J01 sont concernées ; une conversion naïve divisait le montant remboursé par 16.
+- **Encodage** : dans la version 2025, les accents des libellés ATC sont perdus (« Systme digestif ») ; les libellés sont repris de la version 2024.
+- **Régions** : Open Medic n'a pas de code 94 (Corse) et regroupe les DOM sous le code 5. La population INSEE est recodée de la même façon (Corse avec la région 93, DOM regroupés) pour que la jointure soit exacte.
+- **Codes inconnus** : âge 99, sexe 9 et région 99 sont conservés dans le fait, mais exclus des taux.
+
+**Contrôles qualité** ([`data/silver/quality_report.json`](data/silver/quality_report.json)) : 0 ligne rejetée ; 0,28 % des boîtes avec une région inconnue (seuil d'avertissement : 2 %) ; taux de jointure avec la population de 100 % (seuil bloquant : 98 %) ; rapprochement Bronze − Silver − rejets = 0 boîte.
+
+**Premiers résultats (requêtes A et B)**
+
+| Indicateur | 2024 | 2025 |
+|---|---|---|
+| Boîtes d'antibiotiques délivrées en ville | 114,1 millions | 104,6 millions |
+| Montant remboursé | 423,8 M€ | 379,3 M€ |
+| Région la plus consommatrice (boîtes / 1 000 hab.) | Provence-Alpes-Côte d'Azur et Corse : 1 937 | Provence-Alpes-Côte d'Azur et Corse : 1 781 |
+| Région la moins consommatrice (hors outre-mer) | Pays de la Loire : 1 360 | Pays de la Loire : 1 244 |
+| Écart max − min (KPI 6, outre-mer inclus) | 837 | 723 |
+
+La consommation baisse dans toutes les régions entre 2024 et 2025 (de −3,8 % en outre-mer à −10,3 % dans le Grand Est). Cette baisse est à interpréter avec prudence : il faut d'abord vérifier que la version 2025 couvre bien douze mois complets.
 
 ---
 
@@ -175,17 +205,20 @@ Chaque KPI devient une requête sur le schéma en suivant le même raisonnement 
 
 | Fichier | Contenu |
 |---|---|
-| `README.md` | Ce document : KPI, schéma Gold, requêtes OLAP en langage naturel |
-| `notebook/OLAP_challenge_and_capstone.ipynb` | Le notebook de la séance (challenge OLAP T1 à T10), complété par le schéma Gold du projet et les 3 requêtes KPI |
-| `sql/01_gold_schema.sql` | Création du schéma Gold et jeu d'essai synthétique |
+| `README.md` | Ce document : KPI, schéma Gold, requêtes OLAP en langage naturel, pipeline et résultats |
+| `notebook/OLAP_challenge_and_capstone.ipynb` | Le notebook de la séance (challenge OLAP T1 à T10), complété par le chargement de notre entrepôt et les 3 requêtes KPI |
+| `pipeline/` | Scripts Python : archive et Bronze, Silver, chargement Gold |
+| `data/silver/` | Données Silver versionnées (faits J01 compressés, population, référentiels ATC et produits) et rapport qualité |
+| `sql/01_gold_schema.sql` | Création du schéma Gold |
 | `sql/02_kpi_queries.sql` | Les 3 requêtes OLAP des KPI |
 
-**Exécution.** Les scripts SQL tournent sur PostgreSQL (Aiven). Le schéma est créé dans un schéma dédié `capstone`, pour ne pas écraser les tables du challenge OLAP.
+**Exécution.** Avec les variables de connexion PostgreSQL (`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`, `PGSSLMODE=require` sur Aiven) : `python pipeline/03_load_gold.py`, puis `sql/02_kpi_queries.sql`. Le schéma est créé dans un schéma dédié `capstone`, pour ne pas écraser les tables du challenge OLAP. Les fichiers bruts (archive et Bronze, environ 1 Go) restent hors du dépôt.
 
 ## Limites
 
-- **Jeu d'essai synthétique.** Les valeurs actuellement chargées sont fictives et servent à tester les requêtes. Elles seront remplacées par les données réelles issues de la couche Silver.
-- **Ville uniquement.** Open Medic ne couvre pas les médicaments délivrés à l'hôpital.
-- **Une boîte n'est pas une dose.** La mesure de référence internationale est la dose définie journalière (DDD) de l'OMS.
+- **Spécialités des prescripteurs** : les codes `PSP_SPE` sont chargés tels quels ; leurs libellés seront ajoutés à partir du descriptif des variables d'Open Medic.
+- **Ville uniquement** : Open Medic ne couvre pas les médicaments délivrés à l'hôpital.
+- **Une boîte n'est pas une dose** : la mesure de référence internationale est la dose définie journalière (DDD) de l'OMS.
 - **Petits effectifs masqués** dans Open Medic (secret statistique).
-- **Grain annuel et régional** : pas d'analyse saisonnière ni départementale.
+- **Grain annuel et régional** : pas d'analyse saisonnière ni départementale ; Corse et outre-mer regroupés comme dans Open Medic.
+- **Population** : estimations provisoires de l'INSEE, révisées chaque année.
